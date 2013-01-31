@@ -4,6 +4,11 @@ from django.utils import importlib
 from django.utils.encoding import smart_unicode, smart_str
 from django.utils.datastructures import SortedDict
 
+import logging
+
+logger = logging.getLogger('django')
+
+
 try:
     import cPickle as pickle
 except ImportError:
@@ -16,6 +21,7 @@ except ImportError:
         "Redis cache backend requires the 'redis-py' library")
 from redis.connection import UnixDomainSocketConnection, Connection
 from redis.connection import DefaultParser
+import time
 
 
 class CacheKey(object):
@@ -176,7 +182,20 @@ class CacheClass(BaseCache):
         Returns unpickled value if key is found, the default if not.
         """
         key = self.make_key(key, version=version)
-        value = self._client.get(key)
+        try:
+            value = self._client.get(key)
+        except redis.exceptions.ConnectionError:
+            logger.warning("Redis ConnectionError, unable to get key. Fallback to DB.")
+            value = None
+            # for i in range(10):
+            #     try:
+            #         refreshed_cache = CacheClass(self.server, self.params)
+            #         value = refreshed_cache._client.get(key)
+            #         logger.warning("Redis reconnected")
+            #         break
+            #     except:
+            #         logger.warning("Redis ConnectionError, trying to reconnect")
+            #         time.sleep(1)
         if value is None:
             return default
         try:
@@ -210,14 +229,19 @@ class CacheClass(BaseCache):
         if timeout is None:
             timeout = self.default_timeout
         try:
-            value = float(value)
-            # If you lose precision from the typecast to str, then pickle value
-            if int(value) != value:
-                raise TypeError
-        except (ValueError, TypeError):
-            result = self._set(key, pickle.dumps(value), int(timeout), client, _add_only)
-        else:
-            result = self._set(key, int(value), int(timeout), client, _add_only)
+            try:
+                value = float(value)
+                # If you lose precision from the typecast to str, then pickle value
+                if int(value) != value:
+                    raise TypeError
+            except (ValueError, TypeError):
+                result = self._set(key, pickle.dumps(value), int(timeout), client, _add_only)
+            else:
+                result = self._set(key, int(value), int(timeout), client, _add_only)
+        except redis.exceptions.ConnectionError:
+            logger.warning("Redis ConnectionError, not setting any keys...")
+
+            result = False
         # result is a boolean
         return result
 
